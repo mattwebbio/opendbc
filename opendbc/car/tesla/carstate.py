@@ -27,6 +27,7 @@ class CarState(CarStateBase, CarStateExt):
 
     self.hands_on_level = 0
     self.das_control = None
+    self.lateralAccel = 0.0
 
   def update_autopark_state(self, autopark_state: str, cruise_enabled: bool):
     autopark_now = autopark_state in ("ACTIVE", "COMPLETE", "SELFPARK_STARTED")
@@ -46,6 +47,8 @@ class CarState(CarStateBase, CarStateExt):
     # Vehicle speed
     ret.vEgoRaw = cp_party.vl["DI_speed"]["DI_vehicleSpeed"] * CV.KPH_TO_MS
     ret.vEgo, ret.aEgo = self.update_speed_kf(ret.vEgoRaw)
+    ret.yawRate = cp_party.vl["RCM_inertial1"]["RCM_yawRate"]
+    self.lateralAccel = cp_party.vl["RCM_inertial2"]["RCM_lateralAccel"]
 
     # Gas pedal
     ret.gasPressed = cp_party.vl["DI_systemStatus"]["DI_accelPedalPos"] > 0
@@ -151,5 +154,6 @@ class CarState(CarStateBase, CarStateExt):
     return {
       Bus.party: CANParser(DBC[CP.carFingerprint][Bus.party], [], CANBUS.party),
       Bus.ap_party: CANParser(DBC[CP.carFingerprint][Bus.party], [], CANBUS.autopilot_party),
+      Bus.radar: CANParser(DBC[CP.carFingerprint][Bus.radar], [], 1),
       **CarStateExt.get_parser(CP, CP_SP),
     }
