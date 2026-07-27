@@ -368,6 +368,10 @@ static safety_config tesla_init(uint16_t param) {
     {0x488, 0, 4, .check_relay = true, .disable_static_blocking = true},  // DAS_steeringControl
     {0x2b9, 0, 8, .check_relay = true, .disable_static_blocking = true},  // DAS_control
     {0x27D, 0, 3, .check_relay = true, .disable_static_blocking = true},  // APS_eacMonitor
+    {0x50,  1, 8, .check_relay = false},
+    {0x51,  1, 8, .check_relay = false},
+    {0x52,  1, 8, .check_relay = false},
+    {0x53,  1, 8, .check_relay = false},
   };
 
   const uint16_t TESLA_FLAG_FSD_14 = 2;

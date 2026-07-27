@@ -10,9 +10,20 @@ def get_steer_ctrl_type(flags: int, ctrl_type: int) -> int:
 
 
 class TeslaCAN:
-  def __init__(self, CP, packer):
+  def __init__(self, CP, packer, radar_packer):
     self.CP = CP
+    self.CCP = CarControllerParams
     self.packer = packer
+    self.yaw_rate_filtered = 0.0
+    self.radar_packer = radar_packer
+    self.jerk_upper = self.CCP.JERK_LIMIT_MAX
+    self.jerk_lower = self.CCP.JERK_LIMIT_MIN
+
+  @staticmethod
+  def checksum(msg_id, dat):
+    ret = (msg_id & 0xFF) + ((msg_id >> 8) & 0xFF)
+    ret += sum(dat)
+    return ret & 0xFF
 
   def create_steering_control(self, angle, enabled, control_type):
     # On FSD 14+, ANGLE_CONTROL behavior changed to allow user winddown while actuating.
@@ -27,15 +38,22 @@ class TeslaCAN:
 
     return self.packer.make_can_msg("DAS_steeringControl", CANBUS.party, values)
 
-  def create_longitudinal_command(self, acc_state, accel, counter, v_ego, active):
+  def create_longitudinal_command(self, acc_state, accel, counter, v_ego, active, gas_pressed):
     set_speed = min(max(v_ego + accel, 0) * CV.MS_TO_KPH, 400)
+
+    if gas_pressed:
+      self.jerk_lower = min(self.jerk_lower + self.CCP.JERK_RAMP_RATE, 0.0)
+      self.jerk_upper = max(self.jerk_upper - self.CCP.JERK_RAMP_RATE, 0.0)
+    else:
+      self.jerk_lower = max(self.jerk_lower - self.CCP.JERK_RAMP_RATE, self.CCP.JERK_LIMIT_MIN)
+      self.jerk_upper = min(self.jerk_upper + self.CCP.JERK_RAMP_RATE, self.CCP.JERK_LIMIT_MAX)
 
     values = {
       "DAS_setSpeed": set_speed,
       "DAS_accState": acc_state,
       "DAS_aebEvent": 0,
-      "DAS_jerkMin": CarControllerParams.JERK_LIMIT_MIN,
-      "DAS_jerkMax": CarControllerParams.JERK_LIMIT_MAX,
+      "DAS_jerkMin": self.jerk_lower,
+      "DAS_jerkMax": self.jerk_upper,
       "DAS_accelMin": accel,
       "DAS_accelMax": max(accel, 0),
       "DAS_controlCounter": counter,
@@ -48,6 +66,85 @@ class TeslaCAN:
     }
 
     return self.packer.make_can_msg("APS_eacMonitor", CANBUS.party, values)
+
+  def create_speed_information(self, counter, cs):
+    gear = cs.gearShifter
+
+    GEAR_MAP = {
+      "unknown": 0,
+      "park": 1,
+      "reverse": 2,
+      "neutral": 3,
+      "drive": 4,
+    }
+
+    if cs.standstill:
+      direction = 2  # standstill
+    else:
+      direction = 0 if cs.vEgo > 0 else 1  # 0=forward 1=backward
+
+    values = {
+      "Speed": cs.vEgo,
+      "Gear": GEAR_MAP[gear],
+      "Active": 1,
+      "wheelDirectionFrL": direction,
+      "vehicleStopping": 1 if cs.standstill else 0,
+      "wheelDirectionFrR": direction,
+      "wheelDirectionReL": direction,
+      "wheelDirectionReR": direction,
+      "Counter": counter % 16,
+      "Checksum": 0
+    }
+
+    data = self.radar_packer.make_can_msg("SpeedInformation", 1, values)[1]
+    values["Checksum"] = self.checksum(0x50, data[:-1])
+    return self.radar_packer.make_can_msg("SpeedInformation", 1, values)
+
+  def create_radar_yaw_rate(self, counter, cs):
+      # Low-pass filter yaw rate to avoid noisy LSBs triggering vehDynamicsError
+      # Reference car changes by max ±1 raw count per message (0.0002 deg/s step)
+      alpha = 0.15  # filter coefficient (lower = smoother)
+      self.yaw_rate_filtered += alpha * (cs.yawRate * CV.RAD_TO_DEG - self.yaw_rate_filtered)
+
+      values = {
+              "Acceleration": cs.aEgo,
+              "YawRate": 0, # self.yaw_rate_filtered,
+              "Counter": counter % 16,
+              "SETME_15": 15,
+              "SETME_3": 3,
+              "Checksum": 0,
+      }
+
+      msg = self.radar_packer.make_can_msg("YawRateInformation", 1, values)
+      dat = bytearray(msg[1])
+      dat[7] = self.checksum(0x51, dat[:7])  # recompute checksum
+      return [msg[0], bytes(dat), msg[2]]
+
+  def create_speed_information2(self, counter, cs):
+    values = {
+      "wheelSpeedFrL": cs.vEgo * 3.6,
+      "wheelSpeedFrR": cs.vEgo * 3.6,
+      "wheelSpeedReL": cs.vEgo * 3.6,
+      "wheelSpeedReR": cs.vEgo * 3.6,
+      "Counter": counter % 16,
+      "Checksum": 0
+    }
+
+    data = self.radar_packer.make_can_msg("SpeedInformation2", 1, values)[1]
+    values["Checksum"] = self.checksum(0x52, data[:-1])
+    return self.radar_packer.make_can_msg("SpeedInformation2", 1, values)
+
+  def create_radar_lateral_information(self, counter, cs):
+      values = {
+              "steeringWheelAngle": -cs.steeringAngleDeg,
+              "steeringAngleSpeed": -cs.steeringRateDeg,
+              "Counter": counter % 16,
+              "Checksum": 0,
+      }
+
+      data = self.radar_packer.make_can_msg("LateralInformation", 1, values)[1]
+      values["Checksum"] = self.checksum(0x53, data[:-1])
+      return self.radar_packer.make_can_msg("LateralInformation", 1, values)
 
 
 def tesla_checksum(address: int, sig, d: bytearray) -> int:
