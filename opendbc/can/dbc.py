@@ -195,7 +195,8 @@ class DBC:
 # ***** checksum functions *****
 
 def tesla_setup_signal(sig: Signal, dbc_name: str, line_num: int) -> None:
-  if sig.name.endswith("Counter"):
+  # DAS_settings (0x293) counter steps by 2 at ~1 Hz; skip counter check to avoid canError
+  if sig.name.endswith("Counter") and sig.name != "DAS_settingCounter":
     sig.type = SignalType.COUNTER
   elif sig.name.endswith("Checksum"):
     sig.type = SignalType.TESLA_CHECKSUM
